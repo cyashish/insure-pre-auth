@@ -1,0 +1,88 @@
+{
+  "name": "Hospital_Insurance_Verification_and_PriorAuth_AI",
+  "nodes": [
+    {
+      "parameters": {"httpMethod": "POST", "path": "appointment-scheduled", "responseMode": "lastNode", "options": {}},
+      "name": "EHR Appointment Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 400]
+    },
+    {
+      "parameters": {"operation": "getData", "resource": "patient"},
+      "name": "Fetch Patient & Procedure",
+      "type": "n8n-nodes-base.functionItem",
+      "typeVersion": 1,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {"method": "POST", "url": "https://api.clearinghouse.com/v2/eligibility", "authentication": "headerAuth", "options": {"bodyParameters": {"parameters": [{"name": "patient_id", "value": "={{$json.patientId}}"}, {"name": "payer_id", "value": "={{$json.payerId}}"}]}}},
+      "name": "Eligibility Check API",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {"model": "gpt-4o", "prompt": "Given CPT {{$json.cpt}}, ICD-10 {{$json.icd10}}, and payer {{$json.payerId}}, determine if prior authorization is required. Return JSON: {\"requiresPriorAuth\": true/false, \"requiredDocuments\": [\"...\"], \"payerFormUrl\": \"...\"}", "options": {"responseFormat": "json_object"}},
+      "name": "AI PriorAuth Predictor",
+      "type": "@n8n/n8n-nodes-langchain.openAi",
+      "typeVersion": 1,
+      "position": [900, 400]
+    },
+    {
+      "parameters": {"conditions": {"options": {"caseSensitive": true}, "conditions": [{"leftValue": "={{$json.requiresPriorAuth}}", "operator": "equal", "rightValue": true}]}, "combineOperation": "all"},
+      "name": "Check Auth Required",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1120, 400]
+    },
+    {
+      "parameters": {"operation": "createRecord", "resource": "authTracker", "fields": {"patientId": "={{$json.patientId}}", "payerId": "={{$json.payerId}}", "status": "pending_submission"}},
+      "name": "Log to Auth Tracker DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [1340, 300]
+    },
+    {
+      "parameters": {"method": "POST", "url": "https://payer-portal.api/v1/authorization", "authentication": "bearerAuth", "options": {"bodyParameters": {"parameters": [{"name": "payload", "value": "={{$json.authPayload}}"}]}}},
+      "name": "Submit to Payer Portal",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1560, 300]
+    },
+    {
+      "parameters": {"to": "verification-team@hospital.org", "subject": "Prior Auth Submitted - {{$json.patientName}}", "text": "Auth request submitted. Tracking ID: {{$json.trackingId}}\nRequired Docs: {{$json.requiredDocuments}}"},
+      "name": "Notify Verification Team",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2,
+      "position": [1780, 300]
+    },
+    {
+      "parameters": {"rule": {"interval": [{"field": "days", "value": 1}]}},
+      "name": "Daily Status Poll Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [1120, 600]
+    },
+    {
+      "parameters": {"method": "GET", "url": "https://payer-portal.api/v1/authorization/status?trackingId=={{$json.trackingId}}"},
+      "name": "Poll Auth Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.1,
+      "position": [1340, 600]
+    }
+  ],
+  "connections": {
+    "EHR Appointment Webhook": {"main": [[{"node": "Fetch Patient & Procedure", "type": "main", "index": 0}]]},
+    "Fetch Patient & Procedure": {"main": [[{"node": "Eligibility Check API", "type": "main", "index": 0}]]},
+    "Eligibility Check API": {"main": [[{"node": "AI PriorAuth Predictor", "type": "main", "index": 0}]]},
+    "AI PriorAuth Predictor": {"main": [[{"node": "Check Auth Required", "type": "main", "index": 0}]]},
+    "Check Auth Required": {"main": [[{"node": "Log to Auth Tracker DB", "type": "main", "index": 0}]], "true": [[{"node": "Log to Auth Tracker DB", "type": "main", "index": 0}]]},
+    "Log to Auth Tracker DB": {"main": [[{"node": "Submit to Payer Portal", "type": "main", "index": 0}]]},
+    "Submit to Payer Portal": {"main": [[{"node": "Notify Verification Team", "type": "main", "index": 0}]]},
+    "Daily Status Poll Trigger": {"main": [[{"node": "Poll Auth Status", "type": "main", "index": 0}]]}
+  },
+  "settings": {"executionOrder": "v1", "saveDataErrorExecution": "all", "saveDataSuccessExecution": "all"},
+  "versionId": "1.0",
+  "meta": {"instanceId": "hospital-revenue-cycle-ai"}
+}
